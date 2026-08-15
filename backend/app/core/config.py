@@ -34,7 +34,11 @@ class Settings(BaseSettings):
     DB_USER: str
 
     OPENAI_API_KEY: str
-    OPENAI_ORGANIZATION: str
+    OPENAI_ORGANIZATION: str = ""
+
+    LLM_MODEL: str = "gpt-4-turbo"
+    LLM_TEMPERATURE: float = 0.2
+    EMBEDDING_MODEL: str = "text-embedding-3-small"
 
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8
     JWT_ALGORITHM: str = "HS256"
