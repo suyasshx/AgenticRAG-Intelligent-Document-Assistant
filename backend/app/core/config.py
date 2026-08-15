@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     OPENAI_ORGANIZATION: str
 
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8
+    JWT_ALGORITHM: str = "HS256"
 
     FIRST_SUPERUSER: str
     FIRST_SUPERUSER_PASSWORD: str
