@@ -178,3 +178,31 @@ cython_debug/
 # PDM
 .pdm.toml
 #pdm.lock (uncomment the next line to ignore)
+
+
+.env
+.env.*
+!.env.example
+
+__pycache__/
+*.py[cod]
+
+.venv/
+venv/
+env/
+
+.vscode/
+.idea/
+
+.pytest_cache/
+.mypy_cache/
+
+*.log
+
+data/raw/
+data/extraction/
+
+pgvector/
+
+.DS_Store
+Thumbs.db

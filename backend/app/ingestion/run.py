@@ -1,182 +1,295 @@
 import sys
 import os
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+sys.path.append(
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+)
 
 from pathlib import Path
 import yaml
 import json
-from typing import Any, List
-from langchain.schema import Document
+from typing import List
+
 from dotenv import load_dotenv
-from langchain.vectorstores.pgvector import PGVector
-from langchain.embeddings import CacheBackedEmbeddings
+from fastapi.encoders import jsonable_encoder
+
+from langchain_core.documents import Document
+from langchain_community.vectorstores import PGVector
+from langchain_community.document_loaders import UnstructuredFileLoader
+from langchain_text_splitters import TokenTextSplitter
+
+from unstructured.cleaners.core import clean_extra_whitespace
+
 from app.core.config import logger
 from app.schemas.ingestion_schema import LOADER_DICT
-from fastapi.encoders import jsonable_encoder
 from app.utils.general_helpers import find_project_root
 from utils.embedding_models import get_embedding_model
-from langchain.text_splitter import TokenTextSplitter
-from app.init_db import engine
-from langchain_community.document_loaders import UnstructuredFileLoader
-from unstructured.cleaners.core import clean_extra_whitespace
 
 
 load_dotenv()
 
-# Find the project root
+
+# ---------------------------------------------------------
+# Project paths
+# ---------------------------------------------------------
+
 current_script_path = Path(__file__).resolve()
 project_root = find_project_root(current_script_path)
 
-# Correctly construct the path to the config file relative to the project root
-ingestion_config_path = project_root / "app" / "config" / "ingestion.yml"
-
-ingestion_config = yaml.load(open(ingestion_config_path, "r"), Loader=yaml.FullLoader)
-
-# Correctly construct the path to the data/raw directory relative to the project root
-path_input_folder = project_root.parent / ingestion_config.get(
-    "PATH_RAW_PDF", "/data/raw"
+ingestion_config_path = (
+    project_root / "app" / "config" / "ingestion.yml"
 )
 
+with open(ingestion_config_path, "r") as file:
+    ingestion_config = yaml.load(
+        file,
+        Loader=yaml.FullLoader,
+    )
 
-collection_name = ingestion_config.get("COLLECTION_NAME", None)
+
+path_input_folder = project_root.parent / ingestion_config.get(
+    "PATH_RAW_PDF",
+    "data/raw",
+)
 
 path_extraction_folder = project_root.parent / ingestion_config.get(
-    "PATH_EXTRACTION", "/data/extraction"
+    "PATH_EXTRACTION",
+    "data/extraction",
+)
+
+collection_name = ingestion_config.get(
+    "COLLECTION_NAME",
+    "docs",
+)
+
+pdf_parser = ingestion_config.get(
+    "PDF_PARSER",
+    "Unstructured",
+)
+
+chunk_size = ingestion_config.get(
+    "TOKENIZER_CHUNK_SIZE",
+    2000,
+)
+
+chunk_overlap = ingestion_config.get(
+    "TOKENIZER_CHUNK_OVERLAP",
+    200,
 )
 
 
-pdf_parser = ingestion_config.get("PDF_PARSER", None)
-
-chunk_size = ingestion_config.get("TOKENIZER_CHUNK_SIZE", None)
-chunk_overlap = ingestion_config.get("TOKENIZER_CHUNK_OVERLAP", None)
+# ---------------------------------------------------------
+# Database configuration
+# ---------------------------------------------------------
 
 db_name = os.getenv("DB_NAME")
+database_host = os.getenv("DB_HOST")
+database_port = os.getenv("DB_PORT")
+database_user = os.getenv("DB_USER")
+database_password = os.getenv("DB_PASS")
 
-DATABASE_HOST = os.getenv("DB_HOST")
-DATABASE_PORT = os.getenv("DB_PORT")
-DATABASE_USER = os.getenv("DB_USER")
-DATABASE_PASSWORD = os.getenv("DB_PASS")
 
+# ---------------------------------------------------------
+# PDF Extraction Pipeline
+# ---------------------------------------------------------
 
 class PDFExtractionPipeline:
-    """Pipeline for extracting text from PDFs and loading them into a vector store."""
-
-    db: PGVector | None = None
-    embedding: CacheBackedEmbeddings
+    """Extract PDFs, split them into chunks, create embeddings,
+    and store them in PostgreSQL/PGVector.
+    """
 
     def __init__(self):
         logger.info("Initializing PDFExtractionPipeline")
 
-        self.pdf_loader = LOADER_DICT[pdf_parser]
+        # Keep the project's loader configuration available.
+        self.pdf_loader = LOADER_DICT.get(pdf_parser)
+
+        # Local Hugging Face embedding model.
         self.embedding_model = get_embedding_model()
 
-        self.connection_str = PGVector.connection_string_from_db_params(
-            driver="psycopg2",
-            host=DATABASE_HOST,
-            port=DATABASE_PORT,
-            database=db_name,
-            user=DATABASE_USER,
-            password=DATABASE_PASSWORD,
+        # PostgreSQL connection string.
+        self.connection_str = (
+            PGVector.connection_string_from_db_params(
+                driver="psycopg2",
+                host=database_host,
+                port=database_port,
+                database=db_name,
+                user=database_user,
+                password=database_password,
+            )
         )
 
-        logger.debug(f"Connection string: {self.connection_str}")
+        logger.debug(
+            f"Connection string: {self.connection_str}"
+        )
 
     def run(self, collection_name: str):
-        logger.info(f"Running extraction pipeline for collection: {collection_name}")
+        logger.info(
+            f"Running extraction pipeline for collection: "
+            f"{collection_name}"
+        )
 
         self._load_documents(
-            folder_path=path_input_folder, collection_name=collection_name
+            folder_path=path_input_folder,
+            collection_name=collection_name,
         )
 
     def _load_documents(
         self,
-        folder_path: str,
+        folder_path: Path,
         collection_name: str,
-    ) -> PGVector:
-        """Load documents into vectorstore."""
+    ):
+        """Load, split, embed, and store documents."""
+
         text_documents = self._load_docs(folder_path)
 
-        logger.info(f"Loaded {len(text_documents)} documents")
-
-        text_splitter = TokenTextSplitter(
-            chunk_size=2200,
-            chunk_overlap=100,
+        logger.info(
+            f"Loaded {len(text_documents)} documents"
         )
 
-        texts = text_splitter.split_documents(text_documents)
+        if not text_documents:
+            logger.warning(
+                f"No PDF documents found in: {folder_path}"
+            )
+            return None
 
-        # json_path = os.path.join(
-        #     path_extraction_folder, f"{collection_name}_split_texts.json"
-        # )
-        # with open(json_path, "w") as json_file:
-        #     # Use jsonable_encoder to ensure the data is serializable
-        #     json.dump(jsonable_encoder(texts), json_file, indent=4)
+        # Use the values from ingestion.yml.
+        text_splitter = TokenTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
 
-        # Add metadata for separate filtering
+        texts = text_splitter.split_documents(
+            text_documents
+        )
+
+        logger.info(
+            f"Created {len(texts)} document chunks"
+        )
+
+        # Add metadata.
         for text in texts:
             text.metadata["type"] = "Text"
 
-        docs = [*texts]
+        # Make sure extraction directory exists.
+        path_extraction_folder.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
 
-        # Initialize the PGVector instance
+        # Store embeddings in PGVector.
+        logger.info(
+            f"Creating PGVector collection: "
+            f"{collection_name}"
+        )
+
         vector_store = PGVector.from_documents(
             embedding=self.embedding_model,
             collection_name=collection_name,
-            documents=docs,
+            documents=texts,
             connection_string=self.connection_str,
             pre_delete_collection=True,
+        )
+
+        logger.info(
+            "Documents successfully stored in PGVector"
         )
 
         return vector_store
 
     def _load_docs(
         self,
-        dir_path: str,
+        dir_path: Path,
     ) -> List[Document]:
-        """
-        Using specified PDF miner to convert PDF documents to raw text chunks.
+        """Load PDF files and extract their text."""
 
-        Fallback: PyPDF
-        """
         documents = []
-        for file_name in os.listdir(dir_path):
-            file_extension = os.path.splitext(file_name)[1].lower()
 
-            if file_extension == ".pdf":
+        if not dir_path.exists():
+            logger.error(
+                f"Input directory does not exist: {dir_path}"
+            )
+            return documents
 
-                file_path = f"{dir_path}/{file_name}"
-                logger.debug(f"Loading {file_name} from {file_path}")
-                try:
-                    # loader: Any = self.pdf_loader(file_path)  # type: ignore
-                    loader = UnstructuredFileLoader(
-                        file_path=file_path,
-                        strategy="hi_res",
-                        post_processors=[clean_extra_whitespace],
+        logger.info(
+            f"Looking for PDFs in: {dir_path}"
+        )
+
+        for file_path in dir_path.iterdir():
+
+            if file_path.suffix.lower() != ".pdf":
+                continue
+
+            logger.info(
+                f"Loading PDF: {file_path.name}"
+            )
+
+            try:
+
+                loader = UnstructuredFileLoader(
+                    file_path=str(file_path),
+                    strategy="hi_res",
+                    post_processors=[
+                        clean_extra_whitespace
+                    ],
+                )
+
+                file_docs = loader.load()
+
+                documents.extend(file_docs)
+
+                # Save extracted text as JSON.
+                json_path = (
+                    path_extraction_folder
+                    / f"{file_path.stem}.json"
+                )
+
+                path_extraction_folder.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+
+                with open(
+                    json_path,
+                    "w",
+                    encoding="utf-8",
+                ) as json_file:
+
+                    json.dump(
+                        jsonable_encoder(file_docs),
+                        json_file,
+                        indent=4,
+                        ensure_ascii=False,
                     )
 
-                    file_docs = loader.load()
-                    documents.extend(file_docs)
+                logger.info(
+                    f"{file_path.name} loaded successfully"
+                )
 
-                    # Serialize using jsonable_encoder and save to JSON
-                    json_path = os.path.join(
-                        path_extraction_folder, os.path.splitext(file_name)[0] + ".json"
-                    )
-                    with open(json_path, "w") as json_file:
-                        json.dump(jsonable_encoder(file_docs), json_file, indent=4)
-                    logger.info(
-                        f"{file_name} loaded and saved in JSON format successfully"
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"Could not extract text from PDF {file_name}: {repr(e)}"
-                    )
+                logger.info(
+                    f"Extracted text saved to: {json_path}"
+                )
+
+            except Exception as e:
+
+                logger.error(
+                    f"Could not extract text from "
+                    f"{file_path.name}: {repr(e)}"
+                )
 
         return documents
 
 
+# ---------------------------------------------------------
+# Main
+# ---------------------------------------------------------
+
 if __name__ == "__main__":
 
-    logger.info("Starting PDF extraction pipeline")
+    logger.info(
+        "Starting PDF extraction pipeline"
+    )
+
     pipeline = PDFExtractionPipeline()
+
     pipeline.run(collection_name)

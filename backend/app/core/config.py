@@ -23,7 +23,7 @@ class Settings(BaseSettings):
 
     API_VERSION: str = "v1"
     API_V1_STR: str = f"/api/{API_VERSION}"
-    PROJECT_NAME: str = "fastapi-langchain-rag"
+    PROJECT_NAME: str = "AgenticAi Document Assistant"
 
     SECRET_KEY_ACCESS_API: str
 
@@ -33,12 +33,10 @@ class Settings(BaseSettings):
     DB_PASS: str
     DB_USER: str
 
-    OPENAI_API_KEY: str
-    OPENAI_ORGANIZATION: str = ""
-
-    LLM_MODEL: str = "gpt-4-turbo"
+    GROQ_API_KEY: str
+    LLM_MODEL: str = "openai/gpt-oss-120b"
     LLM_TEMPERATURE: float = 0.2
-    EMBEDDING_MODEL: str = "text-embedding-3-small"
+    EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
 
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8
     JWT_ALGORITHM: str = "HS256"

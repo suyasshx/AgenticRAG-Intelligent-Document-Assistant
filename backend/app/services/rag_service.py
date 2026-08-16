@@ -1,20 +1,22 @@
-from langchain.chains import (
+from langchain_classic.chains import (
     create_history_aware_retriever,
     create_retrieval_chain,
 )
-from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_classic.chains.combine_documents import (
+    create_stuff_documents_chain,
+)
 from langchain_core.messages import BaseMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_groq import ChatGroq
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores.pgvector import PGVector
 
 from app.core.config import settings
 
-
 class RAGService:
     def __init__(self):
-        self.embeddings = OpenAIEmbeddings(
-            model=settings.EMBEDDING_MODEL
+        self.embeddings = HuggingFaceEmbeddings(
+            model_name=settings.EMBEDDING_MODEL
         )
 
         self.vector_store = PGVector(
@@ -23,13 +25,16 @@ class RAGService:
             embedding_function=self.embeddings,
         )
 
-        self.llm = ChatOpenAI(
-            model=settings.LLM_MODEL,
-            temperature=settings.LLM_TEMPERATURE,
-        )
+        self.llm = ChatGroq(
+        api_key=settings.GROQ_API_KEY,
+        model=settings.LLM_MODEL,
+        temperature=settings.LLM_TEMPERATURE,
+)
 
     def get_retriever_chain(self):
-        retriever = self.vector_store.as_retriever()
+        retriever = self.vector_store.as_retriever(
+        search_kwargs={"k": 3}
+        )
 
         prompt = ChatPromptTemplate.from_messages(
             [

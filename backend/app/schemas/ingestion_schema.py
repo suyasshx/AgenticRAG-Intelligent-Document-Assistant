@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from enum import Enum
 
-from langchain.document_loaders.base import BaseLoader
+from langchain_core.document_loaders import BaseLoader
 from langchain_community.document_loaders import (
     PDFMinerLoader,
     PDFMinerPDFasHTMLLoader,
